@@ -1,0 +1,964 @@
+Backend
+config/db.js
+import { PrismaClient } from '@prisma/client';
+const prisma = new PrismaClient();
+export default prisma;
+
+controllers/
+authController.js
+import prisma from '../config/db.js';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import { sendSms } from './smsController.js';
+import crypto from 'crypto';
+export const register = async (req, res) => {
+  try {
+    const { fullName, email, password, phone, nationalID, role } = req.body;
+    const existingUser = await prisma.user.findUnique({ where: { email } });
+    const existingAgent = await prisma.agent.findUnique({ where: { email } });
+
+    if (existingUser || existingAgent) {
+      return res.status(400).json({ message: 'Email already registered.' });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    let newUser;
+    if (role === 'agent') {
+      newUser = await prisma.agent.create({
+        data: {
+          fullName,
+          email,
+          password: hashedPassword,
+          role: 'agent', 
+        },
+      });
+    } else {
+      newUser = await prisma.user.create({
+        data: {
+          fullName,
+          email,
+          password: hashedPassword,
+          phone,
+          nationalID,
+          role,
+          phoneVerified: false,
+          nationalIDVerified: false,
+        },
+      });
+      const otp = crypto.randomInt(100000, 999999).toString();
+      const expiryTime = new Date(Date.now() + 5 * 60 * 1000);
+      await prisma.user.update({
+        where: { id: newUser.id },
+        data: { otpCode: otp, otpExpiry: expiryTime },
+      });
+
+      await sendSms(phone, `Your FlightBridge verification code is ${otp}`);
+    }
+    const token = jwt.sign(
+      { id: newUser.id, role: newUser.role || role },
+      process.env.JWT_SECRET,
+      { expiresIn: '1d' }
+    );
+
+    res.status(201).json({
+      message: 'User registered successfully.',
+      token,
+    });
+  } catch (error) {
+    console.error('Error during registration:', error.message);
+    res.status(500).json({ message: 'Something went wrong.' });
+  }
+};
+export const getMe = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    let user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) user = await prisma.agent.findUnique({ where: { id: userId } });
+
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    res.json({
+      id: user.id,
+      fullName: user.fullName,
+      email: user.email,
+      phone: user.phone || null,
+      nationalID: user.nationalID || null,
+      role: user.role,
+      phoneVerified: user.phoneVerified || false,
+      nationalIDVerified: user.nationalIDVerified || false,
+      createdAt: user.createdAt,
+    });
+  } catch (err) {
+    console.error('Error fetching user info:', err);
+    res.status(500).json({ message: 'Failed to fetch user info' });
+  }
+};
+export const login = async (req, res) => {
+  try {
+    const { email, password, role } = req.body;
+
+    let user;
+    if (role === 'agent') {
+      user = await prisma.agent.findUnique({ where: { email } });
+    } else {
+      user = await prisma.user.findUnique({ where: { email } });
+    }
+
+    if (!user) {
+      return res.status(400).json({ message: 'Invalid email or password.' });
+    }
+
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return res.status(400).json({ message: 'Invalid email or password.' });
+    }
+
+    const token = jwt.sign(
+      { id: user.id, role: user.role || role },
+      process.env.JWT_SECRET,
+      { expiresIn: '1d' }
+    );
+    res.status(200).json({ token });
+  } catch (error) {
+    console.error('Error during login:', error.message);
+    res.status(500).json({ message: 'Server error, please try again later.' });
+  }
+};
+flightController.js
+import prisma from "../config/db.js";
+export const addFlight = async (req, res) => {
+  try {
+    const { from, to, departureDate, availableKg } = req.body;
+    const carrierId = req.user.id; 
+    if (!from || !to || !departureDate || !availableKg) {
+      return res.status(400).json({ message: "All fields are required" });
+    }
+    const flight = await prisma.flight.create({
+      data: {
+        from,
+        to,
+        departureDate: new Date(departureDate),
+        availableKg: parseFloat(availableKg),
+        carrierId,
+      },
+    });
+    res.status(201).json({ message: "Flight added successfully", flight });
+  } catch (error) {
+    console.error("Error adding flight:", error);
+    res.status(500).json({ message: "Failed to add flight" });
+  }
+};
+export const getAllFlights = async (req, res) => {
+  try {
+    const flights = await prisma.flight.findMany({
+      include: {
+        carrier: {
+          select: { fullName: true, phone: true },
+        },
+      },
+    });
+
+    res.json(flights);
+  } catch (error) {
+    console.error("Error fetching flights:", error);
+    res.status(500).json({ message: "Failed to fetch flights" });
+  }
+};
+export const updateFlightStatus = async (req, res) => {
+  try {
+    const { flightId } = req.params;
+    const { status } = req.body;
+
+    const validStatuses = ["on-time", "delayed", "canceled"];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ message: "Invalid status value" });
+    }
+    const updated = await prisma.flight.update({
+      where: { id: flightId },
+      data: { status },
+    });
+
+    res.json({ message: "Flight status updated", updated });
+  } catch (error) {
+    console.error("Error updating flight status:", error);
+    res.status(500).json({ message: "Failed to update status" });
+  }
+};
+
+export const getCarrierShipments = async (req, res) => {
+  try {
+    const carrierId = req.user.id;
+
+    const shipments = await prisma.shipment.findMany({
+      where: { carrierId },
+      include: {
+        sender: {
+          select: { fullName: true, phone: true, email: true },
+        },
+        flight: {
+          select: { from: true, to: true, departureDate: true },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    res.status(200).json(shipments);
+  } catch (error) {
+    console.error("Error fetching carrier shipments:", error);
+    res.status(500).json({ message: "Failed to fetch carrier shipments" });
+  }
+};
+otpController.js
+import prisma from '../config/db.js';       
+import crypto from 'crypto';                 
+import { sendSms } from './smsController.js'; 
+export const sendOtp = async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) {
+      return res.status(400).json({ message: 'Phone number is required.' });
+    }
+    const otp = crypto.randomInt(100000, 999999).toString();
+    const expiryTime = new Date(Date.now() + 5 * 60 * 1000);
+    const user = await prisma.user.updateMany({
+      where: { phone },
+      data: { otpCode: otp, otpExpiry: expiryTime },
+    });
+    if (user.count === 0) {
+      return res.status(404).json({ message: 'User not found with this phone number.' });
+    }
+    await sendSms(phone, `Your FlightBridge verification code is ${otp}`);
+    res.json({ message: 'OTP sent successfully.' });
+
+  } catch (error) {
+    console.error('Error sending OTP:', error);
+    res.status(500).json({ message: 'Something went wrong while sending OTP.' });
+  }
+};
+export const verifyOtp = async (req, res) => {
+  try {
+    const { phone, otp } = req.body; 
+    if (!phone || !otp) {
+      return res.status(400).json({ message: 'Phone and OTP are required.' });
+    }
+    const user = await prisma.user.findUnique({ where: { phone } });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+    if (user.otpCode !== otp) {
+      return res.status(400).json({ message: 'Invalid OTP.' });
+    }
+    if (user.otpExpiry < new Date()) {
+      return res.status(400).json({ message: 'OTP expired. Please request a new one.' });
+    }
+    await prisma.user.update({
+      where: { phone },
+      data: {
+        phoneVerified: true,
+        otpCode: null,
+        otpExpiry: null,
+      },
+    });
+    res.json({ message: 'Phone number verified successfully.' });
+
+  } catch (error) {
+    console.error('Error verifying OTP:', error);
+    res.status(500).json({ message: 'Something went wrong during verification.' });
+  }
+};
+paymentController.js
+import fetch from "node-fetch";
+import prisma from "../config/db.js";
+
+export const initializePayment = async (req, res) => {
+  try {
+    const { shipmentId, amount, currency, customerEmail, customerName } = req.body;
+    if (!shipmentId || !amount || !customerEmail || !customerName) {
+      return res.status(400).json({ message: "All fields are required" });
+    }
+    const response = await fetch(process.env.CHAPA_BASE_URL, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.CHAPA_SECRET_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        amount,
+        currency,
+        email: customerEmail,
+        first_name: customerName,
+        callback_url: "https://yourfrontend.com/payment/callback",
+        reference: `shipment_${shipmentId}`,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!data.status || data.status !== "success") {
+      return res.status(400).json({ message: "Failed to initialize payment", data });
+    }
+    const reference = data?.data?.reference || `shipment_${shipmentId}_${Date.now()}`;
+    const payment = await prisma.payment.create({
+      data: {
+        shipmentId,
+        reference,
+        amount,
+        status: "pending",
+      },
+    });
+
+    res.status(200).json({
+      message: "Payment initialized",
+      checkoutUrl: data.data.checkout_url,
+      payment,
+    });
+  } catch (err) {
+    console.error("Payment initialization error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+export const releasePayment = async (req, res) => {
+  try {
+    const { shipmentId } = req.body;
+
+    const payment = await prisma.payment.findFirst({
+      where: { shipmentId },
+    });
+
+    if (!payment) {
+      return res.status(404).json({ message: "Payment not found" });
+    }
+    const feePercentage = 0.10;
+    const platformFee = payment.amount * feePercentage;
+    const amountToCarrier = payment.amount - platformFee;
+
+    const updatedPayment = await prisma.payment.update({
+      where: { id: payment.id },
+      data: {
+        status: "released",
+        releasedAt: new Date(),
+        platformFee, 
+      },
+    });
+    res.status(200).json({
+      message: "Payment released to carrier minus platform fee",
+      payment: updatedPayment,
+      amountToCarrier,
+      platformFee,
+    });
+  } catch (err) {
+    console.error("Payment release error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+export const verifyPayment = async (req, res) => {
+  try {
+    const { reference } = req.params;
+
+    const verifyUrl = `https://api.chapa.co/v1/transaction/verify/${reference}`;
+    const response = await fetch(verifyUrl, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${process.env.CHAPA_SECRET_KEY}`,
+      },
+    });
+
+    const data = await response.json();
+
+    if (!data.status || data.status !== "success") {
+      return res.status(400).json({ message: "Payment verification failed", data });
+    }
+
+    const payment = await prisma.payment.updateMany({
+      where: { reference },
+      data: { status: "paid" },
+    });
+
+    res.status(200).json({
+      message: "Payment verified successfully",
+      payment,
+    });
+  } catch (err) {
+    console.error("Payment verification error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+receiverController.js
+import prisma from "../config/db.js";
+
+export const trackShipment = async (req, res) => {
+  try {
+    const { trackingCode } = req.params;
+
+    const shipment = await prisma.shipment.findFirst({
+      where: { trackingCode },
+      include: {
+        flight: {
+          select: { from: true, to: true, departureDate: true, status: true },
+        },
+        sender: {
+          select: { fullName: true, phone: true },
+        },
+        carrier: {
+          select: { fullName: true, phone: true },
+        },
+      },
+    });
+
+    if (!shipment) {
+      return res.status(404).json({ message: "Shipment not found" });
+    }
+
+    res.status(200).json(shipment);
+  } catch (error) {
+    console.error("Error tracking shipment:", error);
+    res.status(500).json({ message: "Failed to track shipment" });
+  }
+};
+export const confirmDelivery = async (req, res) => {
+  try {
+    const { trackingCode } = req.params;
+
+    const shipment = await prisma.shipment.findUnique({
+      where: { trackingCode },
+      include: { carrier: true },
+    });
+
+    if (!shipment) {
+      return res.status(404).json({ message: "Shipment not found" });
+    }
+
+    if (shipment.status === "DELIVERED") {
+      return res.status(400).json({ message: "Shipment already confirmed" });
+    }
+    const updatedShipment = await prisma.shipment.update({
+  where: { id: shipment.id },
+  data: { status: "DELIVERED" },
+});
+
+const platformFeeRate = 0.1;
+const shipmentFee = shipment.fee ?? 0;
+const platformFee = shipmentFee * platformFeeRate;
+const amountToRelease = shipmentFee - platformFee;
+
+if (amountToRelease > 0 && shipment.carrierId) {
+  await prisma.user.update({
+    where: { id: shipment.carrierId },
+    data: { balance: { increment: amountToRelease } },
+  });
+}
+
+const reference = `SHIP-${shipment.trackingCode}-${Date.now()}`;
+
+await prisma.payment.create({
+  data: {
+    shipmentId: shipment.id,
+    reference,
+    amount: shipmentFee,
+    platformFee,
+    status: "released",
+    releasedAt: new Date(),
+  },
+});
+
+    res.status(200).json({
+      message: "Delivery confirmed. Payment released to carrier minus platform fee.",
+      shipment: updatedShipment,
+      amountReleased: amountToRelease,
+      platformFee,
+    });
+  } catch (err) {
+    console.error("Error confirming delivery:", err);
+    res.status(500).json({ message: "Failed to confirm delivery" });
+  }
+};
+senderController.js
+import prisma from "../config/db.js";
+import { sendSms } from './smsController.js'; 
+export const getAvailableFlights = async (req, res) => {
+  try {
+    const flights = await prisma.flight.findMany({
+      where: {
+        availableKg: {
+          gt: 0,
+        },
+        status: "on-time",
+      },
+      include: {
+        carrier: {
+          select: {
+            fullName: true,
+            phone: true,
+          },
+        },
+      },
+      orderBy: {
+        departureDate: "asc",
+      },
+    });
+
+    res.status(200).json(flights);
+  } catch (error) {
+    console.error("Error fetching flights for sender:", error);
+    res.status(500).json({ message: "Failed to fetch flights" });
+  }
+};
+export const createShipment = async (req, res) => {
+  try {
+    const { flightId, itemWeight, acceptorName, acceptorPhone, acceptorNationalID } = req.body;
+    const senderId = req.user.id; 
+
+    if (!flightId || !itemWeight || !acceptorName || !acceptorPhone || !acceptorNationalID) {
+      return res.status(400).json({ message: "All fields are required" });
+    }
+    const flight = await prisma.flight.findUnique({
+      where: { id: flightId },
+      include: { carrier: { select: { fullName: true, phone: true } } }
+    });
+
+    if (!flight) {
+      return res.status(404).json({ message: "Flight not found" });
+    }
+
+    if (itemWeight > flight.availableKg) {
+      return res.status(400).json({ message: "Item weight exceeds available flight capacity" });
+    }
+    await prisma.flight.update({
+      where: { id: flightId },
+      data: { availableKg: flight.availableKg - itemWeight },
+    });
+    const shipment = await prisma.shipment.create({
+      data: {
+        senderId,
+        carrierId: flight.carrierId,
+        flightId,
+        acceptorName,
+        acceptorPhone,
+        acceptorNationalID,
+        itemWeight: parseFloat(itemWeight),
+        acceptorVerified: false,
+      },
+    });
+    const trackingCode = `SHIP-${shipment.id.slice(-6).toUpperCase()}`;
+    await prisma.shipment.update({
+      where: { id: shipment.id },
+      data: { trackingCode },
+    });
+    const message = `📦 Hello ${acceptorName}, you have a new item shipment from ${req.user.fullName}. 
+Track your package using code: ${trackingCode}. 
+Flight from ${flight.from} to ${flight.to} departs on ${new Date(flight.departureDate).toLocaleDateString()}.`;
+    await sendSms(acceptorPhone, message);
+
+    res.status(201).json({ message: "Shipment request created and SMS sent", shipment });
+  } catch (error) {
+    console.error("Error creating shipment:", error);
+    res.status(500).json({ message: "Failed to create shipment" });
+  }
+};
+
+smsController.js
+import axios from "axios";
+
+const BASE_URL = "https://api.textbee.dev/api/v1";
+
+export const sendSms = async (phone, message) => {
+  try {
+    await axios.post(
+      `${BASE_URL}/gateway/devices/${process.env.TEXTBEE_DEVICE_ID}/send-sms`,
+      {
+        recipients: [phone],
+        message: message,
+      },
+      {
+        headers: {
+          "x-api-key": process.env.TEXTBEE_API_KEY,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+    console.log(`✅ SMS sent successfully to ${phone}`);
+    return true;
+  } catch (error) {
+    console.error(
+      "❌ Error sending SMS via TextBee:",
+      error.response ? error.response.data : error.message
+    );
+    return false;
+  }
+};
+supportController.js
+import prisma from "../config/db.js";
+export const getUserMessages = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const messages = await prisma.supportMessage.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    res.status(200).json(messages);
+  } catch (err) {
+    console.error("Error fetching user messages:", err);
+    res.status(500).json({ message: "Failed to fetch messages" });
+  }
+};
+export const getAllMessagesForAgents = async (req, res) => {
+  try {
+    const messages = await prisma.supportMessage.findMany({
+      orderBy: { createdAt: 'asc' },
+      include: {
+        user: {
+          select: { fullName: true, phone: true }
+        }
+      }
+    });
+
+    res.status(200).json(messages);
+  } catch (err) {
+    console.error("Error fetching agent messages:", err);
+    res.status(500).json({ message: "Failed to fetch messages for agents" });
+  }
+};
+export const createMessage = async (req, res) => {
+  try {
+    const { userId, agentId, message, sentBy } = req.body;
+
+    if (!userId || !message || !sentBy) {
+      return res.status(400).json({ message: "Missing required fields" });
+    }
+
+    const newMessage = await prisma.supportMessage.create({
+      data: {
+        userId,
+        agentId: agentId || null,
+        message,
+        sentBy,
+      },
+    });
+
+    res.status(201).json(newMessage);
+  } catch (err) {
+    console.error("Error creating support message:", err);
+    res.status(500).json({ message: "Failed to create message" });
+  }
+};
+middlewares/
+authMiddleware.js
+import jwt from 'jsonwebtoken';
+import prisma from '../config/db.js';
+
+export const authenticateUser = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'Authorization token missing or malformed.' });
+    }
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    let user = await prisma.user.findUnique({ where: { id: decoded.id } });
+    if (!user) {
+      user = await prisma.agent.findUnique({ where: { id: decoded.id } });
+      if (!user) {
+        return res.status(401).json({ message: 'User not found. Invalid token.' });
+      }
+    }
+    req.user = user; 
+    next();
+
+  } catch (error) {
+    console.error('Auth middleware error:', error.message);
+    return res.status(401).json({ message: 'Unauthorized. Invalid or expired token.' });
+  }
+};
+prisma/
+schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+model User {
+  id                   String   @id @default(auto()) @map("_id") @db.ObjectId
+  fullName             String
+  email                String   @unique
+  password             String
+  phone                String    @unique  
+  nationalID           String
+  role                 String
+  phoneVerified        Boolean  @default(false)
+  nationalIDVerified   Boolean  @default(false)
+  otpCode              String?   
+  otpExpiry            DateTime? 
+  createdAt            DateTime @default(now())
+   flights       Flight[]     @relation("UserFlights")      
+  sentShipments Shipment[]   @relation("SenderShipments")
+  carriedShipments Shipment[] @relation("CarrierShipments") 
+ balance              Float    @default(0) 
+}
+model Flight {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  carrierId     String   @db.ObjectId
+  from          String
+  to            String
+  departureDate DateTime
+  availableKg   Float
+  status        String   @default("on-time")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  carrier       User     @relation("UserFlights", fields: [carrierId], references: [id])
+  shipments     Shipment[]
+}
+
+model Shipment {
+  id                   String   @id @default(auto()) @map("_id") @db.ObjectId
+  senderId             String   @db.ObjectId
+  carrierId            String   @db.ObjectId
+  flightId             String   @db.ObjectId
+  acceptorName         String
+  acceptorPhone        String
+  acceptorNationalID   String
+  itemWeight           Float
+  acceptorVerified     Boolean  @default(false)
+  verificationCode     String? 
+  verificationExpiry   DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  sender   User   @relation("SenderShipments", fields: [senderId], references: [id])
+  carrier  User   @relation("CarrierShipments", fields: [carrierId], references: [id])
+  flight   Flight @relation(fields: [flightId], references: [id])
+  trackingCode        String?  @unique
+  status String @default("PENDING")
+}
+model Payment {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  shipmentId  String
+  reference   String   @unique
+  amount      Float
+  status      String   
+  releasedAt  DateTime?
+  createdAt   DateTime @default(now())
+  platformFee Float?
+}
+
+model Agent {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  fullName  String
+  email     String   @unique
+  password  String
+  createdAt DateTime @default(now())
+  messages  SupportMessage[] @relation("AgentMessages")
+  role      String   @default("agent")
+}
+
+model SupportMessage {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String   @db.ObjectId       
+  agentId   String?  @db.ObjectId       
+  message   String
+  sentBy    String   
+  status    String   @default("unread") 
+  createdAt DateTime @default(now())
+
+  agent Agent? @relation("AgentMessages", fields: [agentId], references: [id])
+}
+routes/
+authRoute.js
+import express from 'express';
+import { register, login,getMe } from '../controllers/authController.js';
+import { authenticateUser } from '../middlewares/authMiddleware.js';
+
+const router = express.Router();
+router.post('/register', register);
+router.post('/login', login);
+router.get('/me', authenticateUser, getMe);
+export default router;
+flightRoute.js
+import express from "express";
+import { addFlight, getAllFlights, updateFlightStatus,getCarrierShipments } from "../controllers/flightController.js";
+import { authenticateUser} from "../middlewares/authMiddleware.js";
+
+const router = express.Router();
+router.post("/add", authenticateUser, addFlight);
+router.get("/get", getAllFlights);
+router.get("/shipments", authenticateUser, getCarrierShipments);
+
+router.put("/:flightId/status", authenticateUser, updateFlightStatus);
+
+export default router;
+otpRoute.js
+import express from 'express';
+import { sendOtp, verifyOtp } from '../controllers/otpController.js';
+
+const router = express.Router();
+router.post('/send-otp', sendOtp);
+router.post('/verify-otp', verifyOtp);
+export default router;
+import express from "express";
+import {
+  getAvailableFlights,
+  createShipment,
+} from "../controllers/senderController.js";
+import { authenticateUser } from "../middlewares/authMiddleware.js";
+const router = express.Router();
+router.get("/flights", authenticateUser, getAvailableFlights);
+router.post("/shipments", authenticateUser, createShipment);
+
+export default router;
+smsRoute.js
+import express from "express";
+import { sendSms } from "../controllers/smsController.js";
+
+const router = express.Router();
+router.post("/send-sms", sendSms);
+
+export default router;
+supportRoutes.js
+import express from "express";
+import {
+  getUserMessages,
+  getAllMessagesForAgents,
+  createMessage,
+} from "../controllers/supportController.js";
+const router = express.Router();
+router.get("/user/:userId", getUserMessages);
+router.get("/agent/all", getAllMessagesForAgents);
+router.post("/message", createMessage);
+
+export default router;
+
+testRoute.js
+import express from 'express';
+import { authenticateUser } from '../middlewares/authMiddleware.js';
+
+const router = express.Router();
+
+router.get('/protected', authenticateUser, (req, res) => {
+  res.json({
+    message: `Hello ${req.user.fullName}, you are authorized!`,
+    user: req.user
+  });
+});
+
+export default router;
+.env
+DATABASE_URL="mongodb+srv://naolbekele193_db_user:f8BpZMoOPrAIYoSH@cluster0.ft8okhf.mongodb.net/flybridge?retryWrites=true&w=majority&appName=Cluster0"
+
+JWT_SECRET="secret_key"
+TEXTBEE_SIGNING_SECRET=bc38831b-d3ae-44cd-a697-c28658f630ca
+TEXTBEE_API_KEY=7cf3fb60-8174-40d7-b2ce-1d58c1ae7dee
+TEXTBEE_DEVICE_ID=68efceb9f90e25846f9cdf5a
+CHAPA_SECRET_KEY=CHASECK_TEST-jAmUubv5HtnXMO4qEVy4yvPKPDqdiV3Y
+CHAPA_BASE_URL=https://api.chapa.co/v1/transaction/initialize
+server.js
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import http from 'http';
+import { Server } from 'socket.io';
+import prisma from './config/db.js';
+import authRoute from './routes/authRoute.js';
+import otpRoute from './routes/otpRoute.js';
+import smsRoute from './routes/smsRoute.js';
+import flightRoute from './routes/flightRoute.js';
+import testRoute from './routes/testRoute.js';
+import senderRoute from './routes/senderRoute.js';
+import receiverRoute from './routes/receiverRoute.js';
+import paymentRoute from './routes/paymentRoute.js';
+import supportRoute from './routes/supportRoutes.js';
+
+dotenv.config();
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// Routes
+app.use('/api/auth', authRoute);
+app.use('/api/otp', otpRoute);
+app.use('/api/sms', smsRoute);
+app.use('/api/flights', flightRoute);
+app.use('/api/sender', senderRoute);
+app.use('/api/receiver', receiverRoute);
+app.use('/api/payment', paymentRoute);
+app.use('/api', testRoute);
+app.use('/api/support', supportRoute);
+
+// Socket.IO
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: '*' } });
+
+// Socket logic (same as before)
+io.on('connection', (socket) => {
+  console.log('🟢 New client connected:', socket.id);
+
+  socket.on('joinRoom', async (roomId) => {
+    try {
+      if (!roomId) return;
+      socket.join(roomId);
+      console.log(`📩 Socket ${socket.id} joined room ${roomId}`);
+
+      const messages = await prisma.supportMessage.findMany({
+        where: { userId: roomId },
+        orderBy: { createdAt: 'asc' },
+      });
+
+      socket.emit('loadMessages', messages);
+    } catch (error) {
+      console.error('Error loading messages:', error);
+    }
+  });
+
+  socket.on('sendMessage', async ({ userId, agentId, sentBy, message }) => {
+    try {
+      if (!userId || !message) return;
+      const newMessage = await prisma.supportMessage.create({
+        data: {
+          userId,
+          agentId: agentId || null,
+          sentBy,
+          message,
+        },
+      });
+
+      console.log(`💾 Message saved for user ${userId}`);
+      io.to(userId).emit('receiveMessage', newMessage);
+    } catch (error) {
+      console.error('❌ Error saving message:', error);
+    }
+  });
+
+  socket.on('disconnect', () => {
+    console.log('🔴 Client disconnected:', socket.id);
+  });
+});
+
+// PORT
+const PORT = process.env.PORT || 5000;
+
+// Start server only if DB connects
+async function startServer() {
+  try {
+    await prisma.$connect();
+    console.log('🟢 Database connected successfully');
+
+    server.listen(PORT, () => {
+      console.log(`✅ Server running on port ${PORT}`);
+    });
+  } catch (err) {
+    console.error('❌ Failed to connect to database:', err.message);
+    process.exit(1); // exit if DB connection fails
+  }
+}
+
+startServer();
+
+

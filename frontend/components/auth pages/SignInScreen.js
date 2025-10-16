@@ -14,6 +14,8 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 import Header from '../Header';
+import { BASE_URL } from '../../config';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const COLORS = {
   BACKGROUND_LIGHT: '#F7F8FC',
@@ -35,38 +37,40 @@ export default function SignInScreen() {
 
   const handleSignIn = async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/auth/login', {
+      const response = await fetch(`${BASE_URL}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password, role }),
       });
       const data = await response.json();
 
-      if (response.ok) {
-        setMessage('Login successful!');
-        const token = data.token;
 
-        const userRes = await fetch('http://localhost:5000/api/auth/me', {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-        });
 
-        const userData = await userRes.json();
-        if (userData.role === 'carrier') {
-  navigation.navigate('CarrierDashboard', { token, user: userData });
-} else if (userData.role === 'sender') {
-  navigation.navigate('senderDashboard', { token, user: userData });
-} else if (userData.role === 'receiver') {
-  navigation.navigate('ReceiverDashboard', { token, user: userData });
-} else if (userData.role === 'agent') {
-  navigation.navigate('AgentDashboard', { token, user: userData }); // <-- pass full user object
-} else {
-  Alert.alert('Error', 'Unknown role. Cannot navigate.');
+// inside handleSignIn
+if (response.ok) {
+  const token = data.token;
+  const userRes = await fetch(`${BASE_URL}/api/auth/me`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+  });
+  const userData = await userRes.json();
+
+  // Save token and user info to AsyncStorage
+  await AsyncStorage.setItem('userToken', token);
+  await AsyncStorage.setItem('userData', JSON.stringify(userData));
+
+  // Navigate based on role
+  if (userData.role === 'carrier') {
+    navigation.navigate('CarrierDashboard', { token, user: userData });
+  } else if (userData.role === 'sender') {
+    navigation.navigate('senderDashboard', { token, user: userData });
+  } else if (userData.role === 'receiver') {
+    navigation.navigate('ReceiverDashboard', { token, user: userData });
+  } else if (userData.role === 'agent') {
+    navigation.navigate('AgentDashboard', { token, user: userData });
+  }
 }
-      } else {
+ else {
         setMessage(data.message || 'Login failed');
       }
     } catch (error) {

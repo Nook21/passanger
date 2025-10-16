@@ -20,6 +20,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Routes
 app.use('/api/auth', authRoute);
 app.use('/api/otp', otpRoute);
 app.use('/api/sms', smsRoute);
@@ -30,13 +31,14 @@ app.use('/api/payment', paymentRoute);
 app.use('/api', testRoute);
 app.use('/api/support', supportRoute);
 
+// Socket.IO
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 
+// Socket logic (same as before)
 io.on('connection', (socket) => {
   console.log('🟢 New client connected:', socket.id);
 
-  // Join room
   socket.on('joinRoom', async (roomId) => {
     try {
       if (!roomId) return;
@@ -54,7 +56,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Send message
   socket.on('sendMessage', async ({ userId, agentId, sentBy, message }) => {
     try {
       if (!userId || !message) return;
@@ -74,49 +75,27 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Get users with messages for agent
-  socket.on('getUsersWithMessages', async (agentId) => {
-    try {
-      const whereFilter = agentId
-        ? { OR: [{ agentId: null }, { agentId }] }
-        : { agentId: null };
-
-      const usersWithMessages = await prisma.supportMessage.groupBy({
-        by: ['userId'],
-        _max: { createdAt: true },
-        _count: { id: true },
-        where: whereFilter,
-      });
-
-      const list = await Promise.all(
-        usersWithMessages.map(async (u) => {
-          const user = await prisma.user.findUnique({ where: { id: u.userId } });
-          const lastMessage = await prisma.supportMessage.findFirst({
-            where: { userId: u.userId },
-            orderBy: { createdAt: 'desc' },
-          });
-
-          return {
-            userId: u.userId,
-            userName: user?.fullName || `User-${u.userId.substring(0, 4)}`,
-            lastMessage: lastMessage?.message || '',
-            lastCreatedAt: u._max.createdAt,
-            unreadCount: u._count.id,
-          };
-        })
-      );
-
-      socket.emit('usersList', list);
-    } catch (err) {
-      console.error('❌ Error fetching users with messages:', err);
-      socket.emit('usersList', []);
-    }
-  });
-
   socket.on('disconnect', () => {
     console.log('🔴 Client disconnected:', socket.id);
   });
 });
 
+// PORT
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+
+// Start server only if DB connects
+async function startServer() {
+  try {
+    await prisma.$connect();
+    console.log('🟢 Database connected successfully');
+
+    server.listen(PORT, () => {
+      console.log(`✅ Server running on port ${PORT}`);
+    });
+  } catch (err) {
+    console.error('❌ Failed to connect to database:', err.message);
+    process.exit(1); // exit if DB connection fails
+  }
+}
+
+startServer();

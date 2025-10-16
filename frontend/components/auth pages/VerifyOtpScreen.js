@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRoute, useNavigation } from '@react-navigation/native';
+import { BASE_URL } from '../../config';
 const COLORS = {
   BACKGROUND_LIGHT: '#F7F8FC',      
   BACKGROUND_DARK: '#2D4B46',
@@ -32,7 +33,7 @@ export default function VerifyOtpScreen() {
   
   const handleVerifyOtp = async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/otp/verify-otp', {
+      const response = await fetch(`${BASE_URL}/api/otp/verify-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone, otp }),

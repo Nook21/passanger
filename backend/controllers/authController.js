@@ -3,13 +3,9 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { sendSms } from './smsController.js';
 import crypto from 'crypto';
-
-// ==================== REGISTER ====================
 export const register = async (req, res) => {
   try {
     const { fullName, email, password, phone, nationalID, role } = req.body;
-
-    // Check if email already exists in User or Agent
     const existingUser = await prisma.user.findUnique({ where: { email } });
     const existingAgent = await prisma.agent.findUnique({ where: { email } });
 
@@ -22,17 +18,15 @@ export const register = async (req, res) => {
 
     let newUser;
     if (role === 'agent') {
-      // Create agent
       newUser = await prisma.agent.create({
         data: {
           fullName,
           email,
           password: hashedPassword,
-          role: 'agent', // ensure role is set
+          role: 'agent', 
         },
       });
     } else {
-      // Create normal user (sender, receiver, carrier)
       newUser = await prisma.user.create({
         data: {
           fullName,
@@ -45,8 +39,6 @@ export const register = async (req, res) => {
           nationalIDVerified: false,
         },
       });
-
-      // Generate OTP for normal users
       const otp = crypto.randomInt(100000, 999999).toString();
       const expiryTime = new Date(Date.now() + 5 * 60 * 1000);
       await prisma.user.update({
@@ -56,8 +48,6 @@ export const register = async (req, res) => {
 
       await sendSms(phone, `Your FlightBridge verification code is ${otp}`);
     }
-
-    // Generate JWT token
     const token = jwt.sign(
       { id: newUser.id, role: newUser.role || role },
       process.env.JWT_SECRET,
@@ -73,13 +63,9 @@ export const register = async (req, res) => {
     res.status(500).json({ message: 'Something went wrong.' });
   }
 };
-
-// ==================== GET ME ====================
 export const getMe = async (req, res) => {
   try {
     const userId = req.user.id;
-
-    // Check if agent
     let user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) user = await prisma.agent.findUnique({ where: { id: userId } });
 
@@ -101,8 +87,6 @@ export const getMe = async (req, res) => {
     res.status(500).json({ message: 'Failed to fetch user info' });
   }
 };
-
-// ==================== LOGIN ====================
 export const login = async (req, res) => {
   try {
     const { email, password, role } = req.body;

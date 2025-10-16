@@ -16,6 +16,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import DashboardHeader from '../dashboardheader';
+import { BASE_URL } from '../../config';
 
 const COLORS = {
   BACKGROUND_LIGHT: '#F7F8FC',
@@ -134,7 +135,7 @@ useEffect(() => {
     setIsLoading(true);
     setShipmentDetails(null);
     try {
-      const res = await fetch(`http://localhost:5000/api/receiver/track/${trackingCode.trim()}`);
+      const res = await fetch(`${BASE_URL}/api/receiver/track/${trackingCode.trim()}`);
       const data = await res.json();
       if (res.ok) {
         setShipmentDetails(data);
@@ -164,7 +165,7 @@ useEffect(() => {
 
     try {
       setIsLoading(true);
-      const API_BASE = "http://localhost:5000";
+      const API_BASE = `${BASE_URL}`;
       const trackingCode = shipment?.trackingCode;
 
       console.log("Sending confirmation request for:", trackingCode);

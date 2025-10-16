@@ -15,6 +15,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 import { Picker } from '@react-native-picker/picker';
 import Header from '../Header';
+import { BASE_URL } from '../../config';
 const COLORS = {
   BACKGROUND_LIGHT: '#F7F8FC',      
   BACKGROUND_DARK: '#2D4B46',
@@ -40,7 +41,7 @@ export default function SignUpScreen() {
     }
 
     try {
-      const response = await fetch('http://localhost:5000/api/auth/register', {
+      const response = await fetch(`${BASE_URL}/api/auth/register`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

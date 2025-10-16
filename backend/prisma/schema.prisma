@@ -57,7 +57,7 @@ model Shipment {
   sender   User   @relation("SenderShipments", fields: [senderId], references: [id])
   carrier  User   @relation("CarrierShipments", fields: [carrierId], references: [id])
   flight   Flight @relation(fields: [flightId], references: [id])
-  trackingCode        String  @unique
+  trackingCode        String?  @unique
   status String @default("PENDING")
 }
 model Payment {

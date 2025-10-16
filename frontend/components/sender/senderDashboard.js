@@ -13,12 +13,16 @@ import {
   Modal,
   KeyboardAvoidingView,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 import Slider from '@react-native-community/slider';
 import * as WebBrowser from 'expo-web-browser';
 import DashboardHeader from '../dashboardheader';
+import { BASE_URL } from '../../config';
+
 const COLORS = {
   BACKGROUND_LIGHT: '#F7F8FC',
   BACKGROUND_DARK: '#2D4B46',
@@ -29,15 +33,15 @@ const COLORS = {
   SECONDARY_TEXT: '#888',
   SUCCESS: '#4CAF50',
 };
+
 const screenWidth = Dimensions.get('window').width;
 const contentPadding = 30;
 const cardSpacing = 15;
+
+/* ---------------- Sidebar Link Component ---------------- */
 const SidebarLink = ({ text, isActive, onPress }) => (
   <TouchableOpacity
-    style={[
-      styles.sidebarLink,
-      isActive && styles.activeSidebarLink,
-    ]}
+    style={[styles.sidebarLink, isActive && styles.activeSidebarLink]}
     onPress={onPress}
   >
     <Text style={[styles.sidebarText, isActive && styles.activeSidebarText]}>
@@ -45,6 +49,8 @@ const SidebarLink = ({ text, isActive, onPress }) => (
     </Text>
   </TouchableOpacity>
 );
+
+/* ---------------- Shipment Modal Component ---------------- */
 const MemoizedShipmentModal = React.memo(({
   isModalVisible,
   setIsModalVisible,
@@ -77,11 +83,12 @@ const MemoizedShipmentModal = React.memo(({
           <Text style={styles.modalTitle}>Shipment Request</Text>
           {selectedFlight && (
             <Text style={styles.modalSubtitle}>
-              Flight: **{selectedFlight.from}** to **{selectedFlight.to}** (Max {selectedFlight.availableKg} kg)
+              Flight: <Text style={{ fontWeight: 'bold' }}>{selectedFlight.from}</Text> → <Text style={{ fontWeight: 'bold' }}>{selectedFlight.to}</Text> (Max {selectedFlight.availableKg} kg)
             </Text>
           )}
+
           <ScrollView style={{ maxHeight: 400, width: '100%', paddingHorizontal: 10 }}>
-            <Text style={styles.label}>Item Weight (Kg): **{itemWeight} kg**</Text>
+            <Text style={styles.label}>Item Weight (Kg): {itemWeight} kg</Text>
             <Slider
               style={styles.slider}
               minimumValue={1}
@@ -93,7 +100,8 @@ const MemoizedShipmentModal = React.memo(({
               value={itemWeight}
               onValueChange={setItemWeight}
             />
-            <Text style={styles.sectionHeader}>Recipient Details (Item Acceptor)</Text>
+
+            <Text style={styles.sectionHeader}>Recipient Details</Text>
             <TextInput
               style={styles.input}
               placeholder="Full Name"
@@ -111,14 +119,14 @@ const MemoizedShipmentModal = React.memo(({
             />
             <TextInput
               style={styles.input}
-              placeholder="National ID (Required for verification)"
+              placeholder="National ID"
               placeholderTextColor={COLORS.SECONDARY_TEXT}
               value={acceptorNationalID}
               onChangeText={setAcceptorNationalID}
             />
             <TextInput
               style={[styles.input, { height: 80 }]}
-              placeholder="Item Description (Optional)"
+              placeholder="Item Description"
               placeholderTextColor={COLORS.SECONDARY_TEXT}
               value={itemDescription}
               onChangeText={setItemDescription}
@@ -140,7 +148,7 @@ const MemoizedShipmentModal = React.memo(({
               disabled={isSubmitting}
             >
               <Text style={styles.submitText}>
-                {isSubmitting ? 'Submitting...' : `Pay & Request Shipment`}
+                {isSubmitting ? 'Submitting...' : 'Pay & Request Shipment'}
               </Text>
             </TouchableOpacity>
           </View>
@@ -149,9 +157,48 @@ const MemoizedShipmentModal = React.memo(({
     </Modal>
   );
 });
+
+/* ---------------- Main Dashboard ---------------- */
 export default function SenderDashboard({ route }) {
   const navigation = useNavigation();
-  const [token] = useState(route.params?.token || 'mock_sender_token');
+  const [token, setToken] = useState(null);
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  // Load from AsyncStorage when app loads
+  useEffect(() => {
+    const loadUser = async () => {
+      try {
+        const storedToken = await AsyncStorage.getItem('token');
+        const storedUser = await AsyncStorage.getItem('user');
+        if (storedToken && storedUser) {
+          setToken(storedToken);
+          setUser(JSON.parse(storedUser));
+        } else if (route.params?.token && route.params?.user) {
+          // if coming from login, save them
+          await AsyncStorage.setItem('token', route.params.token);
+          await AsyncStorage.setItem('user', JSON.stringify(route.params.user));
+          setToken(route.params.token);
+          setUser(route.params.user);
+        } else {
+          navigation.replace('SignIn');
+        }
+      } catch (err) {
+        console.error('AsyncStorage load error', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadUser();
+  }, [route.params]);
+
+  // Logout handler
+  const handleLogout = async () => {
+    await AsyncStorage.removeItem('token');
+    await AsyncStorage.removeItem('user');
+    navigation.replace('SignIn');
+  };
+
   const [activeMenu, setActiveMenu] = useState('SHIPMENTS');
   const [flights, setFlights] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -163,26 +210,23 @@ export default function SenderDashboard({ route }) {
   const [acceptorNationalID, setAcceptorNationalID] = useState('');
   const [itemDescription, setItemDescription] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
   const fetchFlights = useCallback(async () => {
+    if (!token) return;
     try {
-      const res = await fetch('http://localhost:5000/api/sender/flights', {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+      const res = await fetch(`${BASE_URL}/api/sender/flights`, {
+        headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
-      if (res.ok) {
-        setFlights(data);
-      } else {
-        console.error('Error fetching flights:', data.message);
-      }
+      if (res.ok) setFlights(data);
+      else console.error('Error fetching flights:', data.message);
     } catch (err) {
       console.error('Network Error fetching flights:', err);
     }
   }, [token]);
-  useEffect(() => {
-    fetchFlights();
-  }, [fetchFlights]); 
+
+  useEffect(() => { fetchFlights(); }, [fetchFlights]);
+
   const resetForm = () => {
     setSelectedFlight(null);
     setItemWeight(5);
@@ -191,94 +235,88 @@ export default function SenderDashboard({ route }) {
     setAcceptorNationalID('');
     setItemDescription('');
   };
+
   const handleCreateShipment = useCallback(async () => {
-  if (!selectedFlight) return Alert.alert('Error', 'Please select a flight first.');
-  if (!acceptorName || !acceptorPhone || !acceptorNationalID) {
-    return Alert.alert('Missing Details', 'Recipient name, phone, and ID are required.');
-  }
-  if (itemWeight <= 0 || itemWeight > selectedFlight.availableKg) {
-    return Alert.alert('Weight Error', 'Invalid weight or exceeds flight capacity.');
-  }
+    if (!selectedFlight) return Alert.alert('Error', 'Please select a flight first.');
+    if (!acceptorName || !acceptorPhone || !acceptorNationalID)
+      return Alert.alert('Missing Details', 'Recipient name, phone, and ID are required.');
+    if (itemWeight <= 0 || itemWeight > selectedFlight.availableKg)
+      return Alert.alert('Weight Error', 'Invalid weight or exceeds flight capacity.');
 
-  setIsSubmitting(true);
+    setIsSubmitting(true);
+    try {
+      const shipmentRes = await fetch(`${BASE_URL}/api/sender/shipments`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          flightId: selectedFlight.id,
+          itemWeight: parseFloat(itemWeight),
+          acceptorName,
+          acceptorPhone,
+          acceptorNationalID,
+          itemDescription,
+        }),
+      });
+      const shipmentData = await shipmentRes.json();
+      if (!shipmentRes.ok) return Alert.alert('Error', shipmentData.message || 'Failed to create shipment.');
 
-  try {
-    const shipmentRes = await fetch('http://localhost:5000/api/sender/shipments', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        flightId: selectedFlight.id,
-        itemWeight: parseFloat(itemWeight),
-        acceptorName,
-        acceptorPhone,
-        acceptorNationalID,
-        itemDescription,
-      }),
-    });
+      const paymentRes = await fetch(`${BASE_URL}/api/payment/initialize`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          shipmentId: shipmentData.shipment.id,
+          amount: 50,
+          currency: 'ETB',
+          customerName: user.fullName,
+          customerEmail: user.email,
+        }),
+      });
+      const paymentData = await paymentRes.json();
+      if (!paymentRes.ok) return Alert.alert('Error', paymentData.message || 'Payment initialization failed.');
 
-    const shipmentData = await shipmentRes.json();
-
-    if (!shipmentRes.ok) {
-      return Alert.alert('Error', shipmentData.message || 'Failed to create shipment.');
+      if (paymentData.checkoutUrl) {
+        await WebBrowser.openBrowserAsync(paymentData.checkoutUrl);
+        Alert.alert('Payment Started', 'Please complete payment in the browser.');
+      }
+      setIsModalVisible(false);
+      resetForm();
+      fetchFlights();
+    } catch (err) {
+      console.error('Shipment creation error:', err);
+      Alert.alert('Error', 'Something went wrong. Check your connection.');
+    } finally {
+      setIsSubmitting(false);
     }
-    const paymentRes = await fetch('http://localhost:5000/api/payment/initialize', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        shipmentId: shipmentData.shipment.id,   
-        amount: 50, 
-        currency: 'ETB',
-        customerName: 'Sender Name',
-        customerEmail: 'sender@email.com',
-      }),
-    });
-
-    const paymentData = await paymentRes.json();
-
-    if (!paymentRes.ok) {
-      return Alert.alert('Error', paymentData.message || 'Payment initialization failed.');
-    }
-    if (paymentData.checkoutUrl) {
-      await WebBrowser.openBrowserAsync(paymentData.checkoutUrl);
-      Alert.alert('Payment Started', 'Please complete payment in the browser.');
-    }
-
-    setIsModalVisible(false);
-    resetForm();
-    fetchFlights();
-
-  } catch (err) {
-    console.error('Shipment creation error:', err);
-    Alert.alert('Error', 'Something went wrong. Check your connection.');
-  } finally {
-    setIsSubmitting(false);
-  }
-}, [
-  selectedFlight,
-  itemWeight,
-  acceptorName,
-  acceptorPhone,
-  acceptorNationalID,
-  itemDescription,
-  token,
-  fetchFlights,
-]);
+  }, [selectedFlight, itemWeight, acceptorName, acceptorPhone, acceptorNationalID, itemDescription, token, fetchFlights, user]);
 
   const openShipmentModal = (flight) => {
     setSelectedFlight(flight);
-    setItemWeight(Math.min(5, flight.availableKg)); 
+    setItemWeight(Math.min(5, flight.availableKg));
     setIsModalVisible(true);
   };
+
   const filteredFlights = flights.filter(f =>
     f.from.toLowerCase().includes(searchTerm.toLowerCase()) ||
     f.to.toLowerCase().includes(searchTerm.toLowerCase())
   );
+
+  if (loading) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+        <ActivityIndicator size="large" color={COLORS.ACCENT_GOLD} />
+        <Text>Loading Dashboard...</Text>
+      </View>
+    );
+  }
+
+  if (!user || !token) return null;
+
   const FlightCard = ({ item }) => {
     const isSelected = selectedFlight && selectedFlight.id === item.id;
     return (
@@ -287,29 +325,25 @@ export default function SenderDashboard({ route }) {
         onPress={() => openShipmentModal(item)}
       >
         <View style={styles.flightHeader}>
-          <Text style={styles.flightRoute}>
-            {item.from} → {item.to}
-          </Text>
+          <Text style={styles.flightRoute}>{item.from} → {item.to}</Text>
           <Text style={styles.flightCarrier}>{item.carrier.fullName}</Text>
         </View>
-
         <View style={styles.flightDetails}>
           <Text style={styles.detailText}>
             <Text style={styles.detailLabel}>Date:</Text> {new Date(item.departureDate).toLocaleString()}
           </Text>
           <Text style={styles.detailText}>
-            <Text style={styles.detailLabel}>Available KG:</Text>
-            <Text style={styles.availableKg}>{item.availableKg} kg</Text>
+            <Text style={styles.detailLabel}>Available KG:</Text> <Text style={styles.availableKg}>{item.availableKg} kg</Text>
           </Text>
           <Text style={styles.detailText}>
-            <Text style={styles.detailLabel}>Status:</Text>
-            <Text style={styles.flightStatusText}>{item.status.toUpperCase()}</Text>
+            <Text style={styles.detailLabel}>Status:</Text> <Text style={styles.flightStatusText}>{item.status.toUpperCase()}</Text>
           </Text>
         </View>
         <Text style={styles.selectPrompt}>{isSelected ? 'SELECTED' : 'SELECT FLIGHT'}</Text>
       </TouchableOpacity>
     );
   };
+
   return (
     <LinearGradient colors={[COLORS.BACKGROUND_LIGHT, COLORS.BACKGROUND_LIGHT]} style={styles.container}>
       <StatusBar barStyle="dark-content" />
@@ -317,25 +351,16 @@ export default function SenderDashboard({ route }) {
       <View style={styles.mainWrapper}>
         <View style={styles.sidebar}>
           <View style={styles.profileContainer}>
-            <View style={styles.profileImagePlaceholder} />
-            <Text style={styles.profileName}>SENDER NAME</Text>
-            <Text style={styles.profileEmail}>sender.email@example.com</Text>
+            <Text style={styles.profileName}>{user.fullName}</Text>
+            <Text style={styles.profileEmail}>{user.email}</Text>
           </View>
           <SidebarLink text="DASHBOARD" isActive={activeMenu === 'DASHBOARD'} onPress={() => setActiveMenu('DASHBOARD')} />
-           <TouchableOpacity
-                     onPress={() => navigation.navigate('SupportChat', { userId: '68eca3cb4d9377eea1b91b46' })}
-                   
-                     style={{
-                       backgroundColor: "",
-                       padding: 2,
-                       borderRadius: 8,
-                       marginTop: 10,
-                     }}
-                   >
-                     <Text style={{ color: "white", fontWeight: "bold" }}>HELP</Text>
-                   </TouchableOpacity>
           <SidebarLink text="SETTINGS" isActive={activeMenu === 'SETTINGS'} onPress={() => setActiveMenu('SETTINGS')} />
+          <TouchableOpacity onPress={handleLogout} style={[styles.logoutBtn]}>
+            <Text style={{ color: 'white', fontWeight: 'bold' }}>LOGOUT</Text>
+          </TouchableOpacity>
         </View>
+
         <View style={styles.content}>
           <View style={styles.topBar}>
             <Text style={styles.pageTitle}>Browse Available Flights</Text>
@@ -354,7 +379,7 @@ export default function SenderDashboard({ route }) {
           {filteredFlights.length === 0 ? (
             <View style={styles.noFlightsContainer}>
               <Text style={styles.noFlightsText}>
-                {searchTerm ? `No flights found matching "${searchTerm}".` : 'No flights are currently available.'}
+                {searchTerm ? `No flights found matching "${searchTerm}".` : 'No flights available.'}
               </Text>
               <TouchableOpacity onPress={fetchFlights} style={styles.addBtn}>
                 <Text style={styles.addText}>Try Refreshing</Text>
@@ -373,6 +398,7 @@ export default function SenderDashboard({ route }) {
           )}
         </View>
       </View>
+
       <MemoizedShipmentModal
         isModalVisible={isModalVisible}
         setIsModalVisible={setIsModalVisible}
@@ -393,6 +419,7 @@ export default function SenderDashboard({ route }) {
     </LinearGradient>
   );
 }
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.BACKGROUND_LIGHT },
   mainWrapper: {
