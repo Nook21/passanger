@@ -38,8 +38,11 @@ const ChatThreadLink = ({ user, onPress, selected }) => {
   );
 };
 
+
 const AgentChat = ({ route }) => {
-  const { agentId } = route.params;
+  const agentId = route?.params?.userId || null; // <-- changed
+
+
   const [usersList, setUsersList] = useState([]);
   const [selectedUser, setSelectedUser] = useState(null);
   const [messages, setMessages] = useState([]);

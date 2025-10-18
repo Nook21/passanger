@@ -356,9 +356,20 @@ export default function SenderDashboard({ route }) {
           </View>
           <SidebarLink text="DASHBOARD" isActive={activeMenu === 'DASHBOARD'} onPress={() => setActiveMenu('DASHBOARD')} />
           <SidebarLink text="SETTINGS" isActive={activeMenu === 'SETTINGS'} onPress={() => setActiveMenu('SETTINGS')} />
-          <TouchableOpacity onPress={handleLogout} style={[styles.logoutBtn]}>
-            <Text style={{ color: 'white', fontWeight: 'bold' }}>LOGOUT</Text>
-          </TouchableOpacity>
+         <TouchableOpacity
+                     onPress={() =>
+                       navigation.navigate('SupportChat', {
+                         userId: user?._id || 'unknown',
+                       })
+                     }
+                     style={{
+                       padding: 2,
+                       borderRadius: 8,
+                       marginTop: 10,
+                     }}
+                   >
+                     <Text style={{ color: 'white', fontWeight: 'bold' }}>HELP</Text>
+                   </TouchableOpacity>
         </View>
 
         <View style={styles.content}>
